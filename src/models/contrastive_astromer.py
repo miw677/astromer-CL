@@ -44,6 +44,7 @@ import tensorflow as tf
 import toml
 import re
 import inspect
+import os
 from pathlib import Path
 from tensorflow.keras import Model
 from tensorflow.keras.layers import Dense, Layer
@@ -388,7 +389,70 @@ def _canonical_keys_for_model_layer(model_weights):
     return result
 
 
-def load_pretrained_encoder(model, pretrained_path):
+def _leaf_name(weight, fallback):
+    leaf = _weight_path(weight).split('/')[-1]
+    return leaf if leaf in {'kernel', 'bias', 'gamma', 'beta'} else fallback
+
+
+def _dense_pairs(prefix, layer):
+    pairs = []
+    for i, w in enumerate(layer.weights):
+        fallback = 'kernel' if i == 0 else 'bias'
+        pairs.append((f"{prefix}/{_leaf_name(w, fallback)}", w))
+    return pairs
+
+
+def _norm_pairs(prefix, layer):
+    pairs = []
+    for i, w in enumerate(layer.weights):
+        fallback = 'gamma' if i == 0 else 'beta'
+        pairs.append((f"{prefix}/{_leaf_name(w, fallback)}", w))
+    return pairs
+
+
+def _canonical_keys_for_attention_block(block):
+    """Map an AttentionBlock's own sublayers to checkpoint keys without path parsing."""
+    pairs = []
+
+    if all(hasattr(block.mha, attr) for attr in ('wq', 'wk', 'wv', 'dense')):
+        pairs.extend(_dense_pairs('mha/wq', block.mha.wq))
+        pairs.extend(_dense_pairs('mha/wk', block.mha.wk))
+        pairs.extend(_dense_pairs('mha/wv', block.mha.wv))
+        pairs.extend(_dense_pairs('mha/dense', block.mha.dense))
+
+    if hasattr(block, 'ffn') and hasattr(block.ffn, 'layers') and len(block.ffn.layers) >= 2:
+        pairs.extend(_dense_pairs('ffn/layer_with_weights-0', block.ffn.layers[0]))
+        pairs.extend(_dense_pairs('ffn/layer_with_weights-1', block.ffn.layers[1]))
+
+    if hasattr(block, 'layernorm1'):
+        pairs.extend(_norm_pairs('layernorm1', block.layernorm1))
+    if hasattr(block, 'layernorm2'):
+        pairs.extend(_norm_pairs('layernorm2', block.layernorm2))
+
+    if hasattr(block, 'reshape_leak_1'):
+        pairs.extend(_dense_pairs('reshape_leak_1', block.reshape_leak_1))
+    if hasattr(block, 'reshape_leak_2'):
+        pairs.extend(_dense_pairs('reshape_leak_2', block.reshape_leak_2))
+
+    return pairs
+
+
+def _audit_enabled(value):
+    if value is not None:
+        return bool(value)
+    return os.environ.get('ASTROMER_PRETRAIN_AUDIT', '').lower() in {'1', 'true', 'yes', 'y'}
+
+
+def _assign_checkpoint_weight(w, weights_path, ckpt_name):
+    value = tf.train.load_variable(weights_path, ckpt_name)
+    w.assign(value)
+    diff = tf.reduce_max(
+        tf.abs(tf.cast(w, tf.float32) - tf.cast(value, tf.float32))
+    )
+    return float(diff.numpy())
+
+
+def load_pretrained_encoder(model, pretrained_path, audit=None):
     """
     Load ASTROMER v1 pretrained encoder weights into a ContrastiveAstromer model.
     
@@ -434,29 +498,23 @@ def load_pretrained_encoder(model, pretrained_path):
                 ).replace('/.ATTRIBUTES/VARIABLE_VALUE', '')
                 ckpt_lookup[(layer_idx, subpath)] = (name, shape)
 
-    # ---- Group model encoder weights by layer ----
-    model_groups = {}   # layer_idx → [weight, ...]
-    for w in model.encoder.weights:
-        weight_path = _weight_path(w)
-        if '/inp_transform/' in weight_path or 'inp_transform/' in weight_path:
-            model_groups.setdefault(-1, []).append(w)
-        else:
-            m = re.search(r'(?:^|/)att_layer_(\d+)/', weight_path)
-            if m:
-                model_groups.setdefault(int(m.group(1)), []).append(w)
-
+    audit = _audit_enabled(audit)
     loaded = 0
     errors = []
+    loaded_records = []
+    loaded_keys = []
 
     # ---- Match inp_transform by leaf name (kernel / bias) ----
-    for w in model_groups.get(-1, []):
-        leaf = _weight_path(w).split('/')[-1]  # kernel or bias
+    for i, w in enumerate(model.encoder.inp_transform.weights):
+        leaf = _leaf_name(w, 'kernel' if i == 0 else 'bias')
         key = (-1, leaf)
         if key in ckpt_lookup:
             ckpt_name, ckpt_shape = ckpt_lookup[key]
             if list(ckpt_shape) == list(w.shape):
-                w.assign(tf.train.load_variable(weights_path, ckpt_name))
+                max_abs_diff = _assign_checkpoint_weight(w, weights_path, ckpt_name)
                 loaded += 1
+                loaded_keys.append(key)
+                loaded_records.append((key, ckpt_name, _weight_path(w), list(w.shape), max_abs_diff))
             else:
                 errors.append(
                     f"  inp_transform/{leaf}: shape mismatch "
@@ -466,9 +524,10 @@ def load_pretrained_encoder(model, pretrained_path):
             errors.append(f"  inp_transform/{leaf}: not found in checkpoint")
 
     # ---- Match attention layers by canonical key ----
-    for layer_idx in sorted(k for k in model_groups if k >= 0):
-        layer_weights = model_groups[layer_idx]
-        canonical_pairs = _canonical_keys_for_model_layer(layer_weights)
+    for layer_idx, block in enumerate(model.encoder.enc_layers):
+        canonical_pairs = _canonical_keys_for_attention_block(block)
+        if not canonical_pairs:
+            canonical_pairs = _canonical_keys_for_model_layer(block.weights)
 
         for canon_key, w in canonical_pairs:
             if canon_key is None:
@@ -481,8 +540,10 @@ def load_pretrained_encoder(model, pretrained_path):
             if full_key in ckpt_lookup:
                 ckpt_name, ckpt_shape = ckpt_lookup[full_key]
                 if list(ckpt_shape) == list(w.shape):
-                    w.assign(tf.train.load_variable(weights_path, ckpt_name))
+                    max_abs_diff = _assign_checkpoint_weight(w, weights_path, ckpt_name)
                     loaded += 1
+                    loaded_keys.append(full_key)
+                    loaded_records.append((full_key, ckpt_name, _weight_path(w), list(w.shape), max_abs_diff))
                 else:
                     errors.append(
                         f"  att_layer_{layer_idx}/{canon_key}: shape mismatch "
@@ -495,6 +556,39 @@ def load_pretrained_encoder(model, pretrained_path):
 
     total = len(model.encoder.weights)
     print(f"[PRETRAINED] Loaded {loaded}/{total} encoder weights from {pretrained_path}")
+    if audit:
+        print("[PRETRAINED][AUDIT] Loaded weight mapping:")
+        for key, ckpt_name, model_path, shape, max_abs_diff in loaded_records:
+            print(
+                f"  key={key} | ckpt={ckpt_name} | "
+                f"model={model_path} | shape={shape} | max_abs_diff={max_abs_diff:.3e}"
+            )
+
+        duplicate_keys = sorted(
+            key for key in set(loaded_keys) if loaded_keys.count(key) > 1
+        )
+        missing_keys = sorted(set(ckpt_lookup) - set(loaded_keys))
+        bad_diffs = [
+            (key, diff) for key, _, _, _, diff in loaded_records
+            if diff > 0.0
+        ]
+        print(
+            f"[PRETRAINED][AUDIT] Summary: loaded_keys={len(loaded_keys)}, "
+            f"checkpoint_encoder_keys={len(ckpt_lookup)}, duplicates={len(duplicate_keys)}, "
+            f"missing_checkpoint_keys={len(missing_keys)}, nonzero_diffs={len(bad_diffs)}"
+        )
+        if duplicate_keys:
+            print("[PRETRAINED][AUDIT] Duplicate model mappings:")
+            for key in duplicate_keys:
+                print(f"  {key}")
+        if missing_keys:
+            print("[PRETRAINED][AUDIT] Checkpoint encoder keys not loaded:")
+            for key in missing_keys:
+                print(f"  {key}")
+        if bad_diffs:
+            print("[PRETRAINED][AUDIT] Nonzero assignment diffs:")
+            for key, diff in bad_diffs:
+                print(f"  {key}: {diff:.3e}")
     if errors:
         print(f"[PRETRAINED] Errors ({len(errors)}):")
         for e in errors:

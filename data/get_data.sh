@@ -8,6 +8,9 @@ dictionary["atlas"]="125euwxpF0WY_oWq3jVtq9c5pNyUISAOO"
 dictionary["alcock-record"]="1N4-n3OUAA0J2jFF6fO2MmbykzcxzLEuX"
 dictionary["atlas-record"]="1OnSF3EULdJpFY4MwRZLgmXa6DauziR8W"
 
+dictionary["macho-record"]="1W7F5gy0FUM1--zxD0byCjY-p-OXynJyy" # Google Drive /data/records/macho_v2.zip
+
+
 FILEID=${dictionary[$1]}
 echo $FILEID
 

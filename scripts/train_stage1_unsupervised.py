@@ -418,6 +418,16 @@ def main():
                        help='Projection head output dimension')
     parser.add_argument('--projection_hidden_dim', type=int, default=256,
                        help='Projection head hidden dimension')
+    parser.add_argument(
+        '--encoder_mask_mode',
+        choices=['current', 'invert_visible'],
+        default='current',
+        help=(
+            'How to pass contrastive mask_in to the OG encoder. current keeps '
+            'the historical behavior; invert_visible treats mask_in as a '
+            'visible mask for pooling and sends 1-mask_in to the encoder.'
+        ),
+    )
     
     # Training parameters
     parser.add_argument('--epochs', type=int, default=5,
@@ -458,10 +468,11 @@ def main():
             pretrained_path=args.pretrained_path,
             projection_dim=args.projection_dim,
             projection_hidden_dim=args.projection_hidden_dim,
+            encoder_mask_mode=args.encoder_mask_mode,
         )
         # Override window_size from pretrained config
         args.window_size = pt_config['window_size']
-        print(f"✓ Pretrained model built (window_size={args.window_size})\n")
+        print(f"[OK] Pretrained model built (window_size={args.window_size})\n")
     else:
         print("[1/4] Building model from scratch...")
         model = build_contrastive_model(
@@ -471,14 +482,15 @@ def main():
             head_dim=args.head_dim,
             mixer_size=args.mixer_size,
             projection_dim=args.projection_dim,
-            projection_hidden_dim=args.projection_hidden_dim
+            projection_hidden_dim=args.projection_hidden_dim,
+            encoder_mask_mode=args.encoder_mask_mode,
         )
-        print("✓ Model built successfully\n")
+        print("[OK] Model built successfully\n")
     
     # 2. CREATE OPTIMIZER
     print("[2/4] Creating optimizer...")
     optimizer = tf.keras.optimizers.Adam(learning_rate=args.learning_rate)
-    print(f"✓ Optimizer: Adam(lr={args.learning_rate})\n")
+    print(f"[OK] Optimizer: Adam(lr={args.learning_rate})\n")
     
     # 3. LOAD DATA (with train/val split)
     print("[3/4] Loading dataset...")
@@ -488,7 +500,7 @@ def main():
         shuffle_buffer=args.shuffle_buffer,
         window_size=args.window_size,
     )
-    print("✓ Train & Val datasets loaded\n")
+    print("[OK] Train & Val datasets loaded\n")
     
     # 4. TRAIN MODEL
     print("[4/4] Starting training...")
@@ -506,7 +518,7 @@ def main():
         val_dataset=val_dataset,
     )
     
-    print("\n✓ Training complete!")
+    print("\n[OK] Training complete!")
     print(f"Checkpoints saved to: {args.checkpoint_dir}")
 
 

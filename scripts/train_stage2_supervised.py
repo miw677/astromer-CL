@@ -642,6 +642,7 @@ def build_model_from_args(args):
             pretrained_path=args.pretrained_path,
             projection_dim=args.projection_dim,
             projection_hidden_dim=args.projection_hidden_dim,
+            encoder_mask_mode=args.encoder_mask_mode,
         )
         args.window_size = pt_config["window_size"]
         print(f"[OK] Model built with pretrained architecture (window={args.window_size})")
@@ -656,6 +657,7 @@ def build_model_from_args(args):
         mixer_size=args.mixer_size,
         projection_dim=args.projection_dim,
         projection_hidden_dim=args.projection_hidden_dim,
+        encoder_mask_mode=args.encoder_mask_mode,
     )
     dummy = {
         "input": tf.zeros([2, args.window_size, 1]),
@@ -694,6 +696,16 @@ def main():
     parser.add_argument("--mixer_size", type=int, default=256)
     parser.add_argument("--projection_dim", type=int, default=128)
     parser.add_argument("--projection_hidden_dim", type=int, default=256)
+    parser.add_argument(
+        "--encoder_mask_mode",
+        choices=["current", "invert_visible"],
+        default="current",
+        help=(
+            "current keeps the historical contrastive behavior; invert_visible "
+            "treats mask_in as a visible mask for pooling and sends 1-mask_in "
+            "to the OG encoder."
+        ),
+    )
 
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--batch_size", type=int, default=32)

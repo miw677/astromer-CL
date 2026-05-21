@@ -166,6 +166,7 @@ class ContrastiveAstromer(Model):
                  projection_dim=128,
                  projection_hidden_dim=256,
                  trainable_mask=False,
+                 encoder_mask_mode='current',
                  **kwargs):
         
         super().__init__(**kwargs)
@@ -174,6 +175,12 @@ class ContrastiveAstromer(Model):
         self.window_size = window_size
         self.projection_dim = projection_dim
         self.projection_hidden_dim = projection_hidden_dim
+        if encoder_mask_mode not in {'current', 'invert_visible'}:
+            raise ValueError(
+                "encoder_mask_mode must be 'current' or 'invert_visible', "
+                f"got {encoder_mask_mode!r}"
+            )
+        self.encoder_mask_mode = encoder_mask_mode
         # self.trainable_mask = trainable_mask
         self.trainable_mask = False
         
@@ -239,15 +246,21 @@ class ContrastiveAstromer(Model):
         # else:
         #     x = inputs
         x = inputs
+        visible_mask = tf.cast(x['mask_in'], tf.float32)
+        if self.encoder_mask_mode == 'invert_visible':
+            encoder_inputs = dict(x)
+            encoder_inputs['mask_in'] = 1.0 - visible_mask
+        else:
+            encoder_inputs = x
         
         # Encode: x → h
         # h has shape [batch, seq_len, d_model]
-        h = self.encoder(x, training=training)
+        h = self.encoder(encoder_inputs, training=training)
         
         # Pool across time dimension
         # Average pooling: h_pooled = mean(h, axis=1)
         # Shape: [batch, d_model]
-        mask = tf.cast(x['mask_in'], h.dtype)    # [B, T, 1]
+        mask = tf.cast(visible_mask, h.dtype)    # [B, T, 1]
         h_sum = tf.reduce_sum(h * mask, axis=1)  # [B, D]
         denom = tf.reduce_sum(mask, axis=1)      # [B, 1]
         # h_pooled = tf.reduce_mean(h, axis=1)
@@ -280,6 +293,7 @@ def build_contrastive_model(window_size=100,
                             dropout=0.1,
                             projection_dim=128,
                             projection_hidden_dim=256,
+                            encoder_mask_mode='current',
                             **kwargs):
     """
     Convenience function to build ContrastiveAstromer model
@@ -318,6 +332,7 @@ def build_contrastive_model(window_size=100,
         dropout=dropout,
         projection_dim=projection_dim,
         projection_hidden_dim=projection_hidden_dim,
+        encoder_mask_mode=encoder_mask_mode,
         **kwargs
     )
     
@@ -599,7 +614,8 @@ def load_pretrained_encoder(model, pretrained_path, audit=None):
 
 def build_contrastive_model_from_pretrained(pretrained_path,
                                             projection_dim=128,
-                                            projection_hidden_dim=256):
+                                            projection_hidden_dim=256,
+                                            encoder_mask_mode='current'):
     """
     Build a ContrastiveAstromer model with encoder initialized from
     ASTROMER v1 pretrained weights.
@@ -643,6 +659,7 @@ def build_contrastive_model_from_pretrained(pretrained_path,
         temperature=config.get('temperature', 0.0),
         projection_dim=projection_dim,
         projection_hidden_dim=projection_hidden_dim,
+        encoder_mask_mode=encoder_mask_mode,
         # trainable_mask=not config.get('no_msk_token', False),
         trainable_mask=False,
     )

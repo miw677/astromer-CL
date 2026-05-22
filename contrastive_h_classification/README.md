@@ -10,7 +10,7 @@ python contrastive_h_classification/train_pooled_h_classifier.py \
   --data_root data/records/alcock/alcock/fold_0/alcock \
   --pretrained_path weights/macho_v2_2025 \
   --stage1_encoder_checkpoint weights/contrastive_stage1/encoder_epoch_5.weights.h5 \
-  --stage2_encoder_checkpoint weights/contrastive_stage2/encoder_stage2_fresh_epoch_6.weights.h5 \
+  --stage2_encoder_checkpoint weights/contrastive_stage2/encoder_stage2_epoch_6.weights.h5 \
   --output_dir contrastive_h_classification/runs/frozen_head \
   --epochs 1000000 \
   --batch_size 128

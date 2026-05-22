@@ -35,6 +35,8 @@ from src.losses.infonce import infonce_loss
 from src.data.augmentation import create_contrastive_views
 from src.data.split_utils import collect_record_files, resolve_train_val_root
 from src.data.contrastive_record_utils import detect_record_schema, parse_contrastive_sample
+from src.training.contrastive_package import package_contrastive_pretrained
+from scripts.plot_contrastive_history import plot_stage1_history
 
 import warnings
 
@@ -168,6 +170,8 @@ class ContrastiveTrainer:
         self.train_acc_tracker = tf.keras.metrics.Mean(name='train_acc')
         self.val_loss_tracker = tf.keras.metrics.Mean(name='val_loss')
         self.val_acc_tracker = tf.keras.metrics.Mean(name='val_acc')
+        self.latest_full_checkpoint = None
+        self.latest_encoder_checkpoint = None
         
         print(f"[TRAINER] Initialized with tau={tau}")
         print(f"[TRAINER] Checkpoints will be saved to: {self.checkpoint_dir}")
@@ -289,11 +293,13 @@ class ContrastiveTrainer:
         """
         checkpoint_path = self.checkpoint_dir / f'epoch_{epoch}_loss_{avg_loss:.4f}_acc_{avg_acc:.4f}.weights.h5'
         self.model.save_weights(str(checkpoint_path))
+        self.latest_full_checkpoint = checkpoint_path
         print(f"[CHECKPOINT] Saved to {checkpoint_path}")
         
         # Also save the encoder separately (for easy loading in Stage 2/3)
         encoder_path = self.checkpoint_dir / f'encoder_epoch_{epoch}.weights.h5'
         self.model.encoder.save_weights(str(encoder_path))
+        self.latest_encoder_checkpoint = encoder_path
         print(f"[CHECKPOINT] Saved encoder to {encoder_path}")
     
     def train(self, train_dataset, num_epochs=5, save_every=1, val_dataset=None):
@@ -351,46 +357,11 @@ class ContrastiveTrainer:
 
     def _plot_curves(self, history):
         """Plot training & validation loss/accuracy curves and save to checkpoint dir."""
-        try:
-            import matplotlib
-            matplotlib.use('Agg')  # non-interactive backend
-            import matplotlib.pyplot as plt
-        except ImportError:
-            print("[PLOT] matplotlib not installed -- skipping plot.")
-            return
-
-        epochs = range(1, len(history['train_loss']) + 1)
-        has_val = len(history['val_loss']) > 0
-
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
-
-        # --- Loss ---
-        ax1.plot(epochs, history['train_loss'], 'b-o', markersize=3, label='Train')
-        if has_val:
-            ax1.plot(epochs, history['val_loss'], 'r-o', markersize=3, label='Val')
-        ax1.set_xlabel('Epoch')
-        ax1.set_ylabel('InfoNCE Loss')
-        ax1.set_title('Loss')
-        ax1.legend()
-        ax1.grid(True, alpha=0.3)
-
-        # --- Accuracy ---
-        ax2.plot(epochs, history['train_acc'], 'b-o', markersize=3, label='Train')
-        if has_val:
-            ax2.plot(epochs, history['val_acc'], 'r-o', markersize=3, label='Val')
-        ax2.set_xlabel('Epoch')
-        ax2.set_ylabel('Contrastive Accuracy')
-        ax2.set_title('Accuracy')
-        ax2.legend()
-        ax2.grid(True, alpha=0.3)
-
-        fig.suptitle('Stage 1 Unsupervised Contrastive Learning', fontsize=14)
-        fig.tight_layout()
-
-        plot_path = self.checkpoint_dir / 'training_curves.png'
-        fig.savefig(str(plot_path), dpi=150)
-        plt.close(fig)
-        print(f"[PLOT] Saved to {plot_path}")
+        plot_stage1_history(
+            history=history,
+            output_dir=self.checkpoint_dir,
+            output_name='training_curves.png',
+        )
 
 
 # MAIN TRAINING SCRIPT
@@ -448,6 +419,18 @@ def main():
     # Other parameters
     parser.add_argument('--checkpoint_dir', type=str, default='checkpoints/stage1',
                        help='Directory to save checkpoints')
+    parser.add_argument(
+        '--package_dir',
+        type=str,
+        default=None,
+        help='Optional output directory for a publishable pretrained package. '
+             'Defaults to <checkpoint_dir>/pretrained_package.',
+    )
+    parser.add_argument(
+        '--no_package',
+        action='store_true',
+        help='Disable automatic pretrained package creation at the end of training.',
+    )
     parser.add_argument('--shuffle_buffer', type=int, default=1000,
                        help='Shuffle buffer size')
     
@@ -462,6 +445,7 @@ def main():
     print("="*70 + "\n")
     
     # 1. BUILD MODEL
+    pt_config = None
     if args.pretrained_path:
         print(f"[1/4] Building model from pretrained: {args.pretrained_path}")
         model, pt_config = build_contrastive_model_from_pretrained(
@@ -470,8 +454,12 @@ def main():
             projection_hidden_dim=args.projection_hidden_dim,
             encoder_mask_mode=args.encoder_mask_mode,
         )
-        # Override window_size from pretrained config
+        # Override architecture args from pretrained config for accurate metadata.
         args.window_size = pt_config['window_size']
+        args.num_layers = pt_config['num_layers']
+        args.num_heads = pt_config['num_heads']
+        args.head_dim = pt_config['head_dim']
+        args.mixer_size = pt_config['mixer']
         print(f"[OK] Pretrained model built (window_size={args.window_size})\n")
     else:
         print("[1/4] Building model from scratch...")
@@ -517,6 +505,36 @@ def main():
         save_every=1,
         val_dataset=val_dataset,
     )
+
+    if not args.no_package:
+        package_dir = args.package_dir or str(Path(args.checkpoint_dir) / 'pretrained_package')
+        package_contrastive_pretrained(
+            stage='stage1',
+            checkpoint_dir=args.checkpoint_dir,
+            package_dir=package_dir,
+            config={
+                'training_script': 'scripts/train_stage1_unsupervised.py',
+                'data_dir': args.data_dir,
+                'record_schema': RECORD_SCHEMA,
+                'window_size': args.window_size,
+                'num_layers': args.num_layers,
+                'num_heads': args.num_heads,
+                'head_dim': args.head_dim,
+                'mixer_size': args.mixer_size,
+                'projection_dim': args.projection_dim,
+                'projection_hidden_dim': args.projection_hidden_dim,
+                'encoder_mask_mode': args.encoder_mask_mode,
+                'epochs': args.epochs,
+                'batch_size': args.batch_size,
+                'learning_rate': args.learning_rate,
+                'tau': args.tau,
+                'pretrained_path': args.pretrained_path,
+                'pretrained_config': pt_config,
+                'shuffle_buffer': args.shuffle_buffer,
+            },
+            full_checkpoint=trainer.latest_full_checkpoint,
+            encoder_checkpoint=trainer.latest_encoder_checkpoint,
+        )
     
     print("\n[OK] Training complete!")
     print(f"Checkpoints saved to: {args.checkpoint_dir}")

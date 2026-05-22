@@ -1,8 +1,5 @@
 """
-Fresh Stage 2 (Supervised Contrastive) training script.
-
-This file intentionally does not reuse the old Stage 2 trainer logic so we can
-test a clean implementation path end-to-end.
+Stage 2 supervised contrastive training script.
 
 Pipeline:
     labeled TFRecords
@@ -13,7 +10,7 @@ Pipeline:
         -> optional auxiliary CE on pooled encoder representation
 
 Recommended usage (two-stage schedule in one run):
-    python scripts/train_stage2_supervised_fresh.py \
+    python scripts/train_stage2_supervised.py \
         --pretrained_path pretrained/macho_v2_2025 \
         --data_dir data/records/alcock/fold_0/train \
         --epochs 6 --warmup_epochs 1 \
@@ -45,6 +42,8 @@ from src.models.contrastive_astromer import (  # noqa: E402
 )
 from src.data.split_utils import collect_record_files, resolve_train_val_root  # noqa: E402
 from src.data.contrastive_record_utils import detect_record_schema, parse_contrastive_sample  # noqa: E402
+from src.training.contrastive_package import package_contrastive_pretrained  # noqa: E402
+from scripts.plot_contrastive_history import plot_stage2_history  # noqa: E402
 
 
 warnings.filterwarnings(
@@ -283,7 +282,7 @@ def load_labeled_train_val_datasets(
     return train_ds, val_ds, info
 
 
-class Stage2FreshTrainer:
+class Stage2Trainer:
     def __init__(
         self,
         model,
@@ -319,6 +318,9 @@ class Stage2FreshTrainer:
 
         self.classifier = None
         self.class_weight_table = None
+        self.latest_full_checkpoint = None
+        self.latest_encoder_checkpoint = None
+        self.latest_classifier_checkpoint_index = None
 
         if max(self.ce_weight, self.warmup_ce_weight) > 0.0:
             if num_classes is None:
@@ -567,18 +569,21 @@ class Stage2FreshTrainer:
         )
 
     def save_checkpoint(self, epoch):
-        full_path = self.checkpoint_dir / f"stage2_fresh_epoch_{epoch}.weights.h5"
+        full_path = self.checkpoint_dir / f"stage2_epoch_{epoch}.weights.h5"
         self.model.save_weights(str(full_path))
+        self.latest_full_checkpoint = full_path
         print(f"[CHECKPOINT] Saved full model to {full_path}")
 
-        enc_path = self.checkpoint_dir / f"encoder_stage2_fresh_epoch_{epoch}.weights.h5"
+        enc_path = self.checkpoint_dir / f"encoder_stage2_epoch_{epoch}.weights.h5"
         self.model.encoder.save_weights(str(enc_path))
+        self.latest_encoder_checkpoint = enc_path
         print(f"[CHECKPOINT] Saved encoder to {enc_path}")
 
         if self.classifier is not None and self.classifier.built:
-            clf_path = self.checkpoint_dir / f"classifier_stage2_fresh_epoch_{epoch}"
+            clf_path = self.checkpoint_dir / f"classifier_stage2_epoch_{epoch}"
             ckpt = tf.train.Checkpoint(classifier=self.classifier)
             ckpt.write(str(clf_path))
+            self.latest_classifier_checkpoint_index = Path(str(clf_path) + ".index")
             print(f"[CHECKPOINT] Saved classifier checkpoint to {clf_path}")
 
     def train(self, train_dataset, val_dataset, epochs, save_every):
@@ -598,7 +603,7 @@ class Stage2FreshTrainer:
         }
 
         print("\n" + "=" * 70)
-        print("STARTING FRESH STAGE 2 SUPERVISED CONTRASTIVE TRAINING")
+        print("STARTING STAGE 2 SUPERVISED CONTRASTIVE TRAINING")
         print("=" * 70)
 
         for epoch in range(1, epochs + 1):
@@ -625,13 +630,18 @@ class Stage2FreshTrainer:
             if epoch % save_every == 0:
                 self.save_checkpoint(epoch)
 
-        history_path = self.checkpoint_dir / "history_stage2_fresh.json"
+        history_path = self.checkpoint_dir / "history_stage2.json"
         with open(history_path, "w", encoding="utf-8") as f:
             json.dump(history, f, indent=2)
         print(f"[HISTORY] Saved to {history_path}")
+        plot_stage2_history(
+            history=history,
+            output_dir=self.checkpoint_dir,
+            output_name="stage2_val_loss_retrieval.png",
+        )
 
         print("\n" + "=" * 70)
-        print("FRESH STAGE 2 TRAINING COMPLETE")
+        print("STAGE 2 TRAINING COMPLETE")
         print("=" * 70)
 
 
@@ -645,6 +655,11 @@ def build_model_from_args(args):
             encoder_mask_mode=args.encoder_mask_mode,
         )
         args.window_size = pt_config["window_size"]
+        args.num_layers = pt_config["num_layers"]
+        args.num_heads = pt_config["num_heads"]
+        args.head_dim = pt_config["head_dim"]
+        args.mixer_size = pt_config["mixer"]
+        args.pretrained_config = pt_config
         print(f"[OK] Model built with pretrained architecture (window={args.window_size})")
         return model
 
@@ -665,6 +680,7 @@ def build_model_from_args(args):
         "mask_in": tf.ones([2, args.window_size, 1]),
     }
     _ = model(dummy, training=False)
+    args.pretrained_config = None
     print("[OK] Model built")
     return model
 
@@ -685,7 +701,7 @@ def maybe_load_stage1_weights(model, args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Fresh Stage 2 Supervised Contrastive Training")
+    parser = argparse.ArgumentParser(description="Stage 2 Supervised Contrastive Training")
 
     parser.add_argument("--data_dir", type=str, default="data/records/macho_subset/fold_0/train")
 
@@ -724,8 +740,22 @@ def main():
     parser.add_argument("--stage1_encoder_checkpoint", type=str, default=None)
     parser.add_argument("--freeze_encoder", action="store_true")
 
-    parser.add_argument("--checkpoint_dir", type=str, default="checkpoints/stage2_fresh_reimpl")
+    parser.add_argument("--checkpoint_dir", type=str, default="checkpoints/stage2")
     parser.add_argument("--save_every", type=int, default=1)
+    parser.add_argument(
+        "--package_dir",
+        type=str,
+        default=None,
+        help=(
+            "Optional output directory for a publishable pretrained package. "
+            "Defaults to <checkpoint_dir>/pretrained_package."
+        ),
+    )
+    parser.add_argument(
+        "--no_package",
+        action="store_true",
+        help="Disable automatic pretrained package creation at the end of training.",
+    )
 
     parser.add_argument("--shuffle_buffer", type=int, default=1000)
     parser.add_argument("--allow_single_class", action="store_true")
@@ -749,7 +779,7 @@ def main():
     args = parser.parse_args()
 
     print("\n" + "=" * 70)
-    print("CONFIGURATION (FRESH STAGE 2)")
+    print("CONFIGURATION (STAGE 2)")
     print("=" * 70)
     for key, value in vars(args).items():
         print(f"{key:28s}: {value}")
@@ -782,7 +812,7 @@ def main():
         print(f"[AUTO] Inferred num_classes={args.num_classes}")
 
     print("[5/5] Starting training")
-    trainer = Stage2FreshTrainer(
+    trainer = Stage2Trainer(
         model=model,
         optimizer=optimizer,
         tau=args.tau,
@@ -804,6 +834,51 @@ def main():
         epochs=args.epochs,
         save_every=args.save_every,
     )
+
+    if not args.no_package:
+        package_dir = args.package_dir or str(Path(args.checkpoint_dir) / "pretrained_package")
+        package_contrastive_pretrained(
+            stage="stage2",
+            checkpoint_dir=args.checkpoint_dir,
+            package_dir=package_dir,
+            config={
+                "training_script": "scripts/train_stage2_supervised.py",
+                "data_dir": args.data_dir,
+                "record_schema": RECORD_SCHEMA,
+                "window_size": args.window_size,
+                "num_layers": args.num_layers,
+                "num_heads": args.num_heads,
+                "head_dim": args.head_dim,
+                "mixer_size": args.mixer_size,
+                "projection_dim": args.projection_dim,
+                "projection_hidden_dim": args.projection_hidden_dim,
+                "encoder_mask_mode": args.encoder_mask_mode,
+                "epochs": args.epochs,
+                "batch_size": args.batch_size,
+                "learning_rate": args.learning_rate,
+                "tau": args.tau,
+                "supcon_weight": args.supcon_weight,
+                "ce_weight": args.ce_weight,
+                "num_classes": args.num_classes,
+                "warmup_epochs": args.warmup_epochs,
+                "warmup_supcon_weight": args.warmup_supcon_weight,
+                "warmup_ce_weight": args.warmup_ce_weight,
+                "pretrained_path": args.pretrained_path,
+                "pretrained_config": getattr(args, "pretrained_config", None),
+                "stage1_checkpoint": args.stage1_checkpoint,
+                "stage1_encoder_checkpoint": args.stage1_encoder_checkpoint,
+                "freeze_encoder": args.freeze_encoder,
+                "save_every": args.save_every,
+                "shuffle_buffer": args.shuffle_buffer,
+                "train_aug_strength": args.train_aug_strength,
+                "val_aug_strength": args.val_aug_strength,
+                "use_class_balanced_ce": args.use_class_balanced_ce,
+                "data_info": data_info,
+            },
+            full_checkpoint=trainer.latest_full_checkpoint,
+            encoder_checkpoint=trainer.latest_encoder_checkpoint,
+            classifier_checkpoint_index=trainer.latest_classifier_checkpoint_index,
+        )
 
 
 if __name__ == "__main__":

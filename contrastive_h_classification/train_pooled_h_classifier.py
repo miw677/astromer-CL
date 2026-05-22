@@ -763,7 +763,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--stage2_encoder_checkpoint",
         type=str,
-        default="weights/contrastive_stage2/encoder_stage2_fresh_epoch_6.weights.h5",
+        default="weights/contrastive_stage2/encoder_stage2_epoch_6.weights.h5",
     )
     parser.add_argument("--output_dir", type=str, default="contrastive_h_classification/runs/frozen_head")
     parser.add_argument("--systems", nargs="*", default=["og", "stage1", "stage2"])

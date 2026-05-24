@@ -302,31 +302,49 @@ class ContrastiveTrainer:
         self.latest_encoder_checkpoint = encoder_path
         print(f"[CHECKPOINT] Saved encoder to {encoder_path}")
     
-    def train(self, train_dataset, num_epochs=5, save_every=1, val_dataset=None):
+    def train(
+        self,
+        train_dataset,
+        num_epochs=5,
+        save_every=1,
+        val_dataset=None,
+        initial_epoch=0,
+        initial_history=None,
+    ):
         """       
         Args:
             train_dataset: tf.data.Dataset for training
-            num_epochs: Number of epochs to train
+            num_epochs: Target total epoch number to train through
             save_every: Save checkpoint every N epochs
             val_dataset: Optional validation dataset
+            initial_epoch: Last completed epoch when resuming
+            initial_history: Existing history to append to when resuming
         """
+        if initial_epoch >= num_epochs:
+            raise ValueError(
+                f"initial_epoch ({initial_epoch}) must be smaller than num_epochs ({num_epochs})."
+            )
+
         print("\n" + "="*70)
         print("STARTING TRAINING")
         print("="*70)
-        print(f"Epochs:      {num_epochs}")
+        print(f"Epochs:      {initial_epoch + 1} -> {num_epochs}")
         print(f"Temperature: {self.tau}")
         print(f"Optimizer:   {self.optimizer.__class__.__name__}")
         print(f"Learning Rate: {self.optimizer.learning_rate.numpy()}")
         print(f"Validation:  {'Yes' if val_dataset is not None else 'No'}")
         print("="*70 + "\n")
 
-        history = {
+        history = initial_history or {
+            'epoch': [],
             'train_loss': [], 'train_acc': [],
             'val_loss': [],   'val_acc': [],
         }
+        history.setdefault('epoch', list(range(1, len(history.get('train_loss', [])) + 1)))
         
-        for epoch in range(1, num_epochs + 1):
+        for epoch in range(initial_epoch + 1, num_epochs + 1):
             avg_loss, avg_acc = self.train_epoch(train_dataset, epoch)
+            history['epoch'].append(int(epoch))
             history['train_loss'].append(float(avg_loss))
             history['train_acc'].append(float(avg_acc))
 
@@ -415,6 +433,25 @@ def main():
                        help='Path to pretrained ASTROMER v1 directory (e.g. pretrained/macho-clean). '
                             'When set, architecture args are read from config.toml and encoder '
                             'weights are loaded from checkpoint.')
+    parser.add_argument(
+        '--resume_checkpoint',
+        type=str,
+        default=None,
+        help='Full ContrastiveAstromer weights checkpoint to resume from. '
+             'Use epoch_N_loss_*.weights.h5, not encoder_epoch_N.weights.h5.',
+    )
+    parser.add_argument(
+        '--initial_epoch',
+        type=int,
+        default=0,
+        help='Last completed epoch in resume_checkpoint. Training continues from initial_epoch + 1.',
+    )
+    parser.add_argument(
+        '--resume_history_json',
+        type=str,
+        default=None,
+        help='Optional existing Stage 1 history JSON to append to when resuming.',
+    )
 
     # Other parameters
     parser.add_argument('--checkpoint_dir', type=str, default='checkpoints/stage1',
@@ -474,6 +511,26 @@ def main():
             encoder_mask_mode=args.encoder_mask_mode,
         )
         print("[OK] Model built successfully\n")
+
+    resume_history = None
+    if args.resume_checkpoint:
+        print(f"[RESUME] Loading full contrastive checkpoint: {args.resume_checkpoint}")
+        model.load_weights(args.resume_checkpoint)
+        print(f"[RESUME] Loaded checkpoint from epoch {args.initial_epoch}")
+
+        if args.resume_history_json:
+            history_path = Path(args.resume_history_json)
+            if not history_path.exists():
+                raise FileNotFoundError(f"resume_history_json not found: {history_path}")
+            with open(history_path, 'r', encoding='utf-8') as f:
+                resume_history = json.load(f)
+            resume_history.setdefault(
+                'epoch',
+                list(range(1, len(resume_history.get('train_loss', [])) + 1)),
+            )
+            print(f"[RESUME] Loaded existing history: {history_path}")
+        elif args.initial_epoch > 0:
+            print("[RESUME] No resume_history_json provided; new history will include resumed epochs only.")
     
     # 2. CREATE OPTIMIZER
     print("[2/4] Creating optimizer...")
@@ -504,6 +561,8 @@ def main():
         num_epochs=args.epochs,
         save_every=1,
         val_dataset=val_dataset,
+        initial_epoch=args.initial_epoch,
+        initial_history=resume_history,
     )
 
     if not args.no_package:
@@ -530,6 +589,9 @@ def main():
                 'tau': args.tau,
                 'pretrained_path': args.pretrained_path,
                 'pretrained_config': pt_config,
+                'resume_checkpoint': args.resume_checkpoint,
+                'initial_epoch': args.initial_epoch,
+                'resume_history_json': args.resume_history_json,
                 'shuffle_buffer': args.shuffle_buffer,
             },
             full_checkpoint=trainer.latest_full_checkpoint,

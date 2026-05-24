@@ -18,37 +18,58 @@ def plot_stage1_history(history: dict, output_dir: Path, output_name: str = "tra
         print("[PLOT] matplotlib not installed -- skipping plot.")
         return None
 
-    epochs = range(1, len(history["train_loss"]) + 1)
+    epochs = history.get("epoch") or list(range(1, len(history["train_loss"]) + 1))
     has_val = len(history["val_loss"]) > 0
+    title_suffix = f"Epoch 1-{epochs[-1]}" if epochs else "Training"
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
 
     # --- Loss ---
-    ax1.plot(epochs, history["train_loss"], "b-o", markersize=3, label="Train")
+    ax1.plot(epochs, history["train_loss"], "o-", label="Train Loss", color="#1f77b4", linewidth=2)
     if has_val:
-        ax1.plot(epochs, history["val_loss"], "r-o", markersize=3, label="Val")
+        ax1.plot(epochs, history["val_loss"], "s-", label="Val Loss", color="#d62728", linewidth=2)
+        best_val_idx = min(range(len(history["val_loss"])), key=lambda i: history["val_loss"][i])
+        ax1.scatter([epochs[best_val_idx]], [history["val_loss"][best_val_idx]], color="#d62728", s=80, zorder=5)
+        ax1.annotate(
+            f"best val={history['val_loss'][best_val_idx]:.4f}\nepoch {epochs[best_val_idx]}",
+            xy=(epochs[best_val_idx], history["val_loss"][best_val_idx]),
+            xytext=(-82, 18),
+            textcoords="offset points",
+            fontsize=9,
+            bbox={"boxstyle": "round,pad=0.25", "fc": "white", "alpha": 0.8},
+        )
     ax1.set_xlabel("Epoch")
     ax1.set_ylabel("InfoNCE Loss")
-    ax1.set_title("Loss")
+    ax1.set_title(f"Stage 1 Contrastive Loss ({title_suffix})")
     ax1.legend()
     ax1.grid(True, alpha=0.3)
 
     # --- Accuracy ---
-    ax2.plot(epochs, history["train_acc"], "b-o", markersize=3, label="Train")
+    ax2.plot(epochs, history["train_acc"], "o-", label="Train Acc", color="#1f77b4", linewidth=2)
     if has_val:
-        ax2.plot(epochs, history["val_acc"], "r-o", markersize=3, label="Val")
+        ax2.plot(epochs, history["val_acc"], "s-", label="Val Acc", color="#2ca02c", linewidth=2)
+        best_acc_idx = max(range(len(history["val_acc"])), key=lambda i: history["val_acc"][i])
+        ax2.scatter([epochs[best_acc_idx]], [history["val_acc"][best_acc_idx]], color="#2ca02c", s=80, zorder=5)
+        ax2.annotate(
+            f"best val acc={history['val_acc'][best_acc_idx]:.4f}\nepoch {epochs[best_acc_idx]}",
+            xy=(epochs[best_acc_idx], history["val_acc"][best_acc_idx]),
+            xytext=(-100, -35),
+            textcoords="offset points",
+            fontsize=9,
+            bbox={"boxstyle": "round,pad=0.25", "fc": "white", "alpha": 0.8},
+        )
     ax2.set_xlabel("Epoch")
-    ax2.set_ylabel("Contrastive Accuracy")
-    ax2.set_title("Accuracy")
+    ax2.set_ylabel("Batch-wise Positive Pair Matching Accuracy")
+    ax2.set_title(f"Stage 1 Contrastive Accuracy ({title_suffix})")
+    ax2.set_ylim(0.965, 1.0)
     ax2.legend()
     ax2.grid(True, alpha=0.3)
 
-    fig.suptitle("Stage 1 Unsupervised Contrastive Learning", fontsize=14)
     fig.tight_layout()
 
     output_dir.mkdir(parents=True, exist_ok=True)
     plot_path = output_dir / output_name
-    fig.savefig(str(plot_path), dpi=150)
+    fig.savefig(str(plot_path), dpi=180)
     plt.close(fig)
     print(f"[PLOT] Saved to {plot_path}")
     return plot_path

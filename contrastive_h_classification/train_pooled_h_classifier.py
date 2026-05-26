@@ -514,7 +514,7 @@ def train_one_system(
     best_monitor_value = -np.inf if args.monitor == "val_macro_f1" else np.inf
     best_val_macro_f1 = -np.inf
     best_epoch = None
-    best_weights_path = system_dir / "best_head.weights.h5"
+    best_weights_path = system_dir / "best_model.weights.h5"
     history = []
     epochs_without_improvement = 0
 
@@ -525,6 +525,12 @@ def train_one_system(
         raise ValueError(f"{spec.key}: expected h dim {args.expected_h_dim}, got {h.shape}")
     if logits.shape[-1] != num_classes:
         raise ValueError(f"{spec.key}: expected logits dim {num_classes}, got {logits.shape}")
+    print(
+        f"[{spec.key}] trainable_vars={len(model.trainable_variables)} "
+        f"non_trainable_vars={len(model.non_trainable_variables)} "
+        f"encoder_frozen={args.freeze_encoder}",
+        flush=True,
+    )
 
     for epoch in range(1, args.epochs + 1):
         train_losses = []
@@ -588,7 +594,7 @@ def train_one_system(
             best_monitor_value = monitor_value
             best_val_macro_f1 = float(val_metrics["macro_f1"])
             best_epoch = epoch
-            model.head.save_weights(str(best_weights_path))
+            model.save_weights(str(best_weights_path))
             epochs_without_improvement = 0
         else:
             epochs_without_improvement += 1
@@ -601,7 +607,7 @@ def train_one_system(
             )
             break
 
-    model.head.load_weights(str(best_weights_path))
+    model.load_weights(str(best_weights_path))
     test_result = evaluate_model(
         model,
         maybe_take(datasets["test"], args.max_test_batches),
@@ -629,6 +635,8 @@ def train_one_system(
             "uses_projection_z": False,
             "uses_official_skip_avg_mlp": False,
             "uses_gamma_weight": False,
+            "trainable_variable_count": len(model.trainable_variables),
+            "non_trainable_variable_count": len(model.non_trainable_variables),
         },
         "history": history,
         "test": test_result["metrics"],

@@ -27,7 +27,6 @@ def main() -> None:
     parser.add_argument("--plot_path", default=None)
     parser.add_argument("--pretrained_path", default=None)
     parser.add_argument("--data_dir", default=None)
-    parser.add_argument("--encoder_mask_mode", choices=["current", "invert_visible"], default=None)
     parser.add_argument("--projection_dim", type=int, default=128)
     parser.add_argument("--projection_hidden_dim", type=int, default=256)
     parser.add_argument("--stage1_checkpoint", default=None)
@@ -44,7 +43,7 @@ def main() -> None:
         "packaging_script": "scripts/package_contrastive_pretrained.py",
         "data_dir": args.data_dir,
         "pretrained_path": args.pretrained_path,
-        "encoder_mask_mode": args.encoder_mask_mode,
+        "mask_semantics": "contrastive mask_in is visible; model always sends 1-mask_in to encoder",
         "projection_dim": args.projection_dim,
         "projection_hidden_dim": args.projection_hidden_dim,
         "stage1_checkpoint": args.stage1_checkpoint,

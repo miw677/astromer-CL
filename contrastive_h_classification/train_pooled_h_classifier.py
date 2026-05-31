@@ -85,21 +85,14 @@ class PooledHClassifier(tf.keras.Model):
         head: AstromerStyleMLPHead,
         encoder_frozen: bool = True,
         expected_h_dim: int = 256,
-        encoder_mask_mode: str = "current",
         name: str = "pooled_h_classifier",
     ):
         super().__init__(name=name)
-        if encoder_mask_mode not in {"current", "invert_visible"}:
-            raise ValueError(
-                "encoder_mask_mode must be 'current' or 'invert_visible', "
-                f"got {encoder_mask_mode!r}"
-            )
         self.contrastive_model = contrastive_model
         self.encoder = contrastive_model.encoder
         self.head = head
         self.encoder_frozen = bool(encoder_frozen)
         self.expected_h_dim = int(expected_h_dim)
-        self.encoder_mask_mode = encoder_mask_mode
         self.contrastive_model.projection_head.trainable = False
         self.encoder.trainable = not self.encoder_frozen
 
@@ -113,11 +106,8 @@ class PooledHClassifier(tf.keras.Model):
     def extract_h(self, inputs: dict[str, tf.Tensor], training: bool = False) -> tf.Tensor:
         encoder_training = bool(training and not self.encoder_frozen)
         visible_mask = tf.cast(inputs["mask_in"], tf.float32)
-        if self.encoder_mask_mode == "invert_visible":
-            encoder_inputs = dict(inputs)
-            encoder_inputs["mask_in"] = 1.0 - visible_mask
-        else:
-            encoder_inputs = inputs
+        encoder_inputs = dict(inputs)
+        encoder_inputs["mask_in"] = 1.0 - visible_mask
         h_seq = self.encoder(encoder_inputs, training=encoder_training)
         h = self.masked_mean_pool(h_seq, visible_mask)
 
@@ -368,13 +358,11 @@ def build_model_for_system(
     num_classes: int,
     encoder_frozen: bool,
     expected_h_dim: int,
-    encoder_mask_mode: str,
 ) -> PooledHClassifier:
     contrastive_model, _ = build_contrastive_model_from_pretrained(
         pretrained_path=str(pretrained_path),
         projection_dim=projection_dim,
         projection_hidden_dim=projection_hidden_dim,
-        encoder_mask_mode=encoder_mask_mode,
     )
 
     if spec.checkpoint:
@@ -403,7 +391,6 @@ def build_model_for_system(
         head=head,
         encoder_frozen=encoder_frozen,
         expected_h_dim=expected_h_dim,
-        encoder_mask_mode=encoder_mask_mode,
         name=spec.key,
     )
 
@@ -506,7 +493,6 @@ def train_one_system(
         num_classes=num_classes,
         encoder_frozen=args.freeze_encoder,
         expected_h_dim=args.expected_h_dim,
-        encoder_mask_mode=args.encoder_mask_mode,
     )
 
     optimizer = tf.keras.optimizers.Adam(learning_rate=args.learning_rate)
@@ -786,15 +772,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--projection_dim", type=int, default=128)
     parser.add_argument("--projection_hidden_dim", type=int, default=256)
     parser.add_argument("--expected_h_dim", type=int, default=256)
-    parser.add_argument(
-        "--encoder_mask_mode",
-        choices=["current", "invert_visible"],
-        default="current",
-        help=(
-            "current keeps historical behavior; invert_visible treats mask_in "
-            "as visible mask for pooling and passes 1-mask_in to the OG encoder."
-        ),
-    )
     parser.add_argument("--max_train_batches", type=int, default=None)
     parser.add_argument("--max_val_batches", type=int, default=None)
     parser.add_argument("--max_test_batches", type=int, default=None)
@@ -826,6 +803,10 @@ def main() -> None:
         json.dump(
             {
                 "args": vars(args),
+                "mask_semantics": (
+                    "contrastive mask_in is visible; classifier always sends "
+                    "1-mask_in to encoder"
+                ),
                 "schema": schema,
                 "num_classes": num_classes,
                 "class_label_mapping": {str(i): name for i, name in enumerate(class_names)},

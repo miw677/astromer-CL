@@ -76,7 +76,7 @@ def create_view_pair(sample):
     return create_contrastive_views(sample)
 
 
-def _build_pipeline(dataset, window_size, batch_size, shuffle_buffer=None):
+def _build_pipeline(dataset, window_size, batch_size, shuffle_buffer=None, seed=None):
     """Shared pipeline: parse -> truncate -> augment -> (shuffle) -> batch -> prefetch."""
     dataset = dataset.map(parse_tfrecord, num_parallel_calls=tf.data.AUTOTUNE)
     dataset = dataset.filter(lambda s: tf.shape(s['input'])[0] > 0)
@@ -86,7 +86,7 @@ def _build_pipeline(dataset, window_size, batch_size, shuffle_buffer=None):
     )
     dataset = dataset.map(create_view_pair, num_parallel_calls=tf.data.AUTOTUNE)
     if shuffle_buffer:
-        dataset = dataset.shuffle(shuffle_buffer)
+        dataset = dataset.shuffle(shuffle_buffer, seed=seed, reshuffle_each_iteration=True)
 
     padding_shapes = (
         {'input': [window_size, 1], 'times': [window_size, 1], 'mask_in': [window_size, 1]},
@@ -104,7 +104,7 @@ def _build_pipeline(dataset, window_size, batch_size, shuffle_buffer=None):
 
 def load_train_val_datasets(
     record_dir, batch_size=32, shuffle_buffer=1000,
-    window_size=200
+    window_size=200, seed=None
 ):
     """
     Load TFRecords from explicit train/val split directories.
@@ -137,8 +137,8 @@ def load_train_val_datasets(
         val_files, num_parallel_reads=tf.data.AUTOTUNE
     )
 
-    train_dataset = _build_pipeline(train_ds, window_size, batch_size, shuffle_buffer)
-    val_dataset   = _build_pipeline(val_ds, window_size, batch_size, shuffle_buffer=None)
+    train_dataset = _build_pipeline(train_ds, window_size, batch_size, shuffle_buffer, seed=seed)
+    val_dataset   = _build_pipeline(val_ds, window_size, batch_size, shuffle_buffer=None, seed=seed)
 
     return train_dataset, val_dataset
 
@@ -407,17 +407,6 @@ def main():
                        help='Projection head output dimension')
     parser.add_argument('--projection_hidden_dim', type=int, default=256,
                        help='Projection head hidden dimension')
-    parser.add_argument(
-        '--encoder_mask_mode',
-        choices=['current', 'invert_visible'],
-        default='current',
-        help=(
-            'How to pass contrastive mask_in to the OG encoder. current keeps '
-            'the historical behavior; invert_visible treats mask_in as a '
-            'visible mask for pooling and sends 1-mask_in to the encoder.'
-        ),
-    )
-    
     # Training parameters
     parser.add_argument('--epochs', type=int, default=5,
                        help='Number of training epochs')
@@ -470,6 +459,12 @@ def main():
     )
     parser.add_argument('--shuffle_buffer', type=int, default=1000,
                        help='Shuffle buffer size')
+    parser.add_argument(
+        '--seed',
+        type=int,
+        default=None,
+        help='Optional random seed for TensorFlow/Keras initialization, crop, augmentation, and shuffle.',
+    )
     
     args = parser.parse_args()
     
@@ -480,6 +475,10 @@ def main():
     for arg, value in vars(args).items():
         print(f"{arg:25s}: {value}")
     print("="*70 + "\n")
+
+    if args.seed is not None:
+        tf.keras.utils.set_random_seed(args.seed)
+        print(f"[SEED] tf.keras.utils.set_random_seed({args.seed})\n")
     
     # 1. BUILD MODEL
     pt_config = None
@@ -489,7 +488,6 @@ def main():
             pretrained_path=args.pretrained_path,
             projection_dim=args.projection_dim,
             projection_hidden_dim=args.projection_hidden_dim,
-            encoder_mask_mode=args.encoder_mask_mode,
         )
         # Override architecture args from pretrained config for accurate metadata.
         args.window_size = pt_config['window_size']
@@ -508,7 +506,6 @@ def main():
             mixer_size=args.mixer_size,
             projection_dim=args.projection_dim,
             projection_hidden_dim=args.projection_hidden_dim,
-            encoder_mask_mode=args.encoder_mask_mode,
         )
         print("[OK] Model built successfully\n")
 
@@ -544,6 +541,7 @@ def main():
         batch_size=args.batch_size,
         shuffle_buffer=args.shuffle_buffer,
         window_size=args.window_size,
+        seed=args.seed,
     )
     print("[OK] Train & Val datasets loaded\n")
     
@@ -582,7 +580,7 @@ def main():
                 'mixer_size': args.mixer_size,
                 'projection_dim': args.projection_dim,
                 'projection_hidden_dim': args.projection_hidden_dim,
-                'encoder_mask_mode': args.encoder_mask_mode,
+                'mask_semantics': 'contrastive mask_in is visible; model always sends 1-mask_in to encoder',
                 'epochs': args.epochs,
                 'batch_size': args.batch_size,
                 'learning_rate': args.learning_rate,
@@ -593,6 +591,7 @@ def main():
                 'initial_epoch': args.initial_epoch,
                 'resume_history_json': args.resume_history_json,
                 'shuffle_buffer': args.shuffle_buffer,
+                'seed': args.seed,
             },
             full_checkpoint=trainer.latest_full_checkpoint,
             encoder_checkpoint=trainer.latest_encoder_checkpoint,

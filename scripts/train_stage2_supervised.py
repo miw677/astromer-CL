@@ -144,6 +144,7 @@ def build_dataset_pipeline(
     shuffle_buffer=None,
     apply_aug=True,
     aug_cfg=None,
+    seed=None,
 ):
     dataset = raw_dataset.map(parse_labeled_tfrecord, num_parallel_calls=tf.data.AUTOTUNE)
     dataset = dataset.map(
@@ -156,7 +157,7 @@ def build_dataset_pipeline(
     )
 
     if shuffle_buffer:
-        dataset = dataset.shuffle(shuffle_buffer)
+        dataset = dataset.shuffle(shuffle_buffer, seed=seed, reshuffle_each_iteration=True)
 
     padding_shapes = (
         {"input": [window_size, 1], "times": [window_size, 1], "mask_in": [window_size, 1]},
@@ -185,6 +186,7 @@ def load_labeled_train_val_datasets(
     allow_single_class,
     train_aug_strength,
     val_aug_strength,
+    seed=None,
 ):
     """Load explicit train/val split directories and build batched pipelines."""
     resolved_dir, train_dir, val_dir = resolve_train_val_root(record_dir, project_root)
@@ -254,6 +256,7 @@ def load_labeled_train_val_datasets(
         shuffle_buffer=shuffle_buffer,
         apply_aug=train_apply_aug,
         aug_cfg=train_aug_cfg,
+        seed=seed,
     )
     val_ds = build_dataset_pipeline(
         val_dataset_raw,
@@ -262,6 +265,7 @@ def load_labeled_train_val_datasets(
         shuffle_buffer=None,
         apply_aug=val_apply_aug,
         aug_cfg=val_aug_cfg,
+        seed=seed,
     )
 
     total_count = float(len(label_values))
@@ -652,7 +656,6 @@ def build_model_from_args(args):
             pretrained_path=args.pretrained_path,
             projection_dim=args.projection_dim,
             projection_hidden_dim=args.projection_hidden_dim,
-            encoder_mask_mode=args.encoder_mask_mode,
         )
         args.window_size = pt_config["window_size"]
         args.num_layers = pt_config["num_layers"]
@@ -672,7 +675,6 @@ def build_model_from_args(args):
         mixer_size=args.mixer_size,
         projection_dim=args.projection_dim,
         projection_hidden_dim=args.projection_hidden_dim,
-        encoder_mask_mode=args.encoder_mask_mode,
     )
     dummy = {
         "input": tf.zeros([2, args.window_size, 1]),
@@ -712,17 +714,6 @@ def main():
     parser.add_argument("--mixer_size", type=int, default=256)
     parser.add_argument("--projection_dim", type=int, default=128)
     parser.add_argument("--projection_hidden_dim", type=int, default=256)
-    parser.add_argument(
-        "--encoder_mask_mode",
-        choices=["current", "invert_visible"],
-        default="current",
-        help=(
-            "current keeps the historical contrastive behavior; invert_visible "
-            "treats mask_in as a visible mask for pooling and sends 1-mask_in "
-            "to the OG encoder."
-        ),
-    )
-
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--learning_rate", type=float, default=1e-4)
@@ -775,6 +766,12 @@ def main():
 
     parser.add_argument("--max_train_batches", type=int, default=0)
     parser.add_argument("--max_val_batches", type=int, default=0)
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Optional random seed for TensorFlow/Keras initialization, crop, augmentation, and shuffle.",
+    )
 
     args = parser.parse_args()
 
@@ -784,6 +781,10 @@ def main():
     for key, value in vars(args).items():
         print(f"{key:28s}: {value}")
     print("=" * 70)
+
+    if args.seed is not None:
+        tf.keras.utils.set_random_seed(args.seed)
+        print(f"[SEED] tf.keras.utils.set_random_seed({args.seed})")
 
     model = build_model_from_args(args)
     maybe_load_stage1_weights(model, args)
@@ -805,6 +806,7 @@ def main():
         allow_single_class=args.allow_single_class,
         train_aug_strength=args.train_aug_strength,
         val_aug_strength=args.val_aug_strength,
+        seed=args.seed,
     )
 
     if args.num_classes is None:
@@ -852,7 +854,7 @@ def main():
                 "mixer_size": args.mixer_size,
                 "projection_dim": args.projection_dim,
                 "projection_hidden_dim": args.projection_hidden_dim,
-                "encoder_mask_mode": args.encoder_mask_mode,
+                "mask_semantics": "contrastive mask_in is visible; model always sends 1-mask_in to encoder",
                 "epochs": args.epochs,
                 "batch_size": args.batch_size,
                 "learning_rate": args.learning_rate,
@@ -873,6 +875,7 @@ def main():
                 "train_aug_strength": args.train_aug_strength,
                 "val_aug_strength": args.val_aug_strength,
                 "use_class_balanced_ce": args.use_class_balanced_ce,
+                "seed": args.seed,
                 "data_info": data_info,
             },
             full_checkpoint=trainer.latest_full_checkpoint,

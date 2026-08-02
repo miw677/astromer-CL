@@ -15,6 +15,17 @@ Unsupervised Contrastive Learning Training Script
 
 Usage:
     python scripts/train_stage1_unsupervised.py --epochs 10 --batch_size 64 --tau 0.07
+
+    Stage 1 Training:
+
+    python scripts/train_stage1_unsupervised.py \
+        --pretrained_path weights/astromer_v2/macho \
+        --data_dir /data/records/macho_v2/full/fold_0/ \
+        --epochs 5 \
+        --batch_size 32 \
+        --tau 0.07 \
+        --learning_rate 1e-4 \
+        --checkpoint_dir weights/contrastive_stage1_fullmacho
 """
 
 import tensorflow as tf
@@ -148,7 +159,7 @@ def load_train_val_datasets(
 class ContrastiveTrainer:
     """
     Trainer for unsupervised contrastive learning
-    
+
     """
     
     def __init__(self, model, optimizer, tau=0.1, checkpoint_dir='checkpoints/stage1'):
@@ -296,7 +307,7 @@ class ContrastiveTrainer:
         self.latest_full_checkpoint = checkpoint_path
         print(f"[CHECKPOINT] Saved to {checkpoint_path}")
         
-        # Also save the encoder separately (for easy loading in Stage 2/3)
+        # Also save the encoder separately (for easy loading in Stage 2 and Downstream tasks)
         encoder_path = self.checkpoint_dir / f'encoder_epoch_{epoch}.weights.h5'
         self.model.encoder.save_weights(str(encoder_path))
         self.latest_encoder_checkpoint = encoder_path
@@ -370,7 +381,7 @@ class ContrastiveTrainer:
         print("="*70)
         print("Next steps:")
         print("1. Load encoder weights for Stage 2 (supervised contrastive)")
-        print("2. Or use encoder for Stage 3 (Gaussian Process classifier)")
+        print("2. Or use encoder for downstream tasks")
         print("="*70 + "\n")
 
     def _plot_curves(self, history):
@@ -419,7 +430,7 @@ def main():
     
     # Pretrained model
     parser.add_argument('--pretrained_path', type=str, default=None,
-                       help='Path to pretrained ASTROMER v1 directory (e.g. pretrained/macho-clean). '
+                       help='Path to pretrained ASTROMER directory (e.g. pretrained/macho-clean). '
                             'When set, architecture args are read from config.toml and encoder '
                             'weights are loaded from checkpoint.')
     parser.add_argument(

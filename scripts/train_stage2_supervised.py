@@ -9,12 +9,29 @@ Pipeline:
         -> supervised contrastive loss
         -> optional auxiliary CE on pooled encoder representation
 
-Recommended usage (two-stage schedule in one run):
+Usage:
     python scripts/train_stage2_supervised.py \
         --pretrained_path pretrained/macho_v2_2025 \
         --data_dir data/records/alcock/fold_0/train \
         --epochs 6 --warmup_epochs 1 \
         --supcon_weight 1.0 --ce_weight 0.1
+
+    Stage 2 Training:
+
+    python scripts/train_stage2_supervised.py \
+        --pretrained_path weights/astromer_v2/macho \
+        --stage1_checkpoint weights/contrastive_stage1_fullmacho/epoch_x_loss_0.xx_acc_0.xx.weights.h5 \
+        --data_dir data/records/alcock/fold_0/alcock \
+        --epochs 6 \
+        --batch_size 32 \
+        --tau 0.07 \
+        --learning_rate 1e-4 \
+        --supcon_weight 1.0 \
+        --ce_weight 0.1 \
+        --warmup_epochs 1 \
+        --train_aug_strength weak \
+        --val_aug_strength weak \
+        --checkpoint_dir weights/contrastive_stage2_fullalcock
 """
 
 import argparse
@@ -30,20 +47,20 @@ import tensorflow as tf
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from src.data.augmentation import (  # noqa: E402
+from src.data.augmentation import ( 
     create_contrastive_views,
     get_default_augmentation_config,
     get_strong_augmentation_config,
 )
-from src.losses.supcon import supervised_contrastive_loss  # noqa: E402
-from src.models.contrastive_astromer import (  # noqa: E402
+from src.losses.supcon import supervised_contrastive_loss
+from src.models.contrastive_astromer import ( 
     build_contrastive_model,
     build_contrastive_model_from_pretrained,
 )
-from src.data.split_utils import collect_record_files, resolve_train_val_root  # noqa: E402
-from src.data.contrastive_record_utils import detect_record_schema, parse_contrastive_sample  # noqa: E402
-from src.training.contrastive_package import package_contrastive_pretrained  # noqa: E402
-from scripts.plot_contrastive_history import plot_stage2_history  # noqa: E402
+from src.data.split_utils import collect_record_files, resolve_train_val_root 
+from src.data.contrastive_record_utils import detect_record_schema, parse_contrastive_sample 
+from src.training.contrastive_package import package_contrastive_pretrained  
+from scripts.plot_contrastive_history import plot_stage2_history 
 
 
 warnings.filterwarnings(

@@ -460,7 +460,7 @@ def _assign_checkpoint_weight(w, weights_path, ckpt_name):
 
 def load_pretrained_encoder(model, pretrained_path, audit=None):
     """
-    Load ASTROMER v1 pretrained encoder weights into a ContrastiveAstromer model.
+    Load ASTROMER pretrained encoder weights into a ContrastiveAstromer model.
     
     Uses canonical-key matching: both checkpoint variable names and model weight
     paths are mapped to a common canonical form (layer_idx, subpath) and matched.
@@ -608,7 +608,7 @@ def build_contrastive_model_from_pretrained(pretrained_path,
                                             projection_hidden_dim=256):
     """
     Build a ContrastiveAstromer model with encoder initialized from
-    ASTROMER v1 pretrained weights.
+    ASTROMER pretrained weights.
     
     Reads the architecture hyperparameters from the pretrained config.toml,
     builds a matching ContrastiveAstromer, loads the encoder weights,
